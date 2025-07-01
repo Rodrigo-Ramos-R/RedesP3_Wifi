@@ -58,9 +58,11 @@
 #define TpID_GasUp		 	4
 #define TpID_PartUp		 	5
 
-#define Gas_default 10;
-#define Part_default 10;
+#define Gas_default 		10
+#define Part_default 		10
 
+#define TOTAL_TOPICS 6
+#define MAX_RETRIES 3
 
 /*******************************************************************************
  * Prototypes
@@ -114,6 +116,22 @@ uint8_t Particles_Treshold = 50;
 uint16_t Gas_value = Gas_default;
 uint16_t Particles_value = Part_default;
 
+typedef struct {
+    const char *topic;
+    int qos;
+    int retries;
+    bool subscribed;
+} mqtt_topic_t;
+
+static mqtt_topic_t topic_list[TOTAL_TOPICS] = {
+    {"Air_Filtering/Gas_up", 0, 0, false},
+    {"Air_Filtering/Particles_up", 0, 0, false},
+    {"Air_Filtering/GasThresh", 0, 0, false},
+    {"Air_Filtering/PartThresh", 0, 0, false},
+    {"Air_Filtering/GasAlarmOFF", 0, 0, false},
+    {"Air_Filtering/PartAlarmOFF", 0, 0, false}
+};
+
 
 /*******************************************************************************
  * Code
@@ -124,17 +142,57 @@ uint16_t Particles_value = Part_default;
  */
 static void mqtt_topic_subscribed_cb(void *arg, err_t err)
 {
-    const char *topic = (const char *)arg;
+    int topic_index = (int)(uintptr_t)arg;
+
+    if (topic_index < 0 || topic_index >= TOTAL_TOPICS)
+        return;
+
+    mqtt_topic_t *topic = &topic_list[topic_index];
 
     if (err == ERR_OK)
     {
-        PRINTF("Subscribed to the topic \"%s\".\r\n", topic);
+        topic->subscribed = true;
+        PRINTF("Subscribed to the topic \"%s\".\r\n", topic->topic);
     }
     else
     {
-        PRINTF("Failed to subscribe to the topic \"%s\": %d.\r\n", topic, err);
+        topic->retries++;
+        PRINTF("Failed to subscribe to the topic \"%s\": %d (retry %d)\r\n",
+               topic->topic, err, topic->retries);
+    }
+
+    // Check if all subscriptions are successful
+    bool all_subscribed = true;
+    for (int i = 0; i < TOTAL_TOPICS; i++)
+    {
+        if (!topic_list[i].subscribed)
+        {
+            all_subscribed = false;
+            break;
+        }
+    }
+
+    // Create publisher threads only once
+    static bool publisher_threads_created = false;
+    if (all_subscribed && !publisher_threads_created)
+    {
+        PRINTF("All topics subscribed successfully. Creating publisher threads...\r\n");
+
+        if (xTaskCreate(vThread_Publish_Gas, "Gases", 1000, NULL, Publish_priority, NULL) != pdPASS)
+        {
+            PRINTF("Error: No se pudo crear la tarea vThread_Publish_Gas.\r\n");
+        }
+
+        if (xTaskCreate(vThread_Publish_Particles, "Particles", 1000, NULL, Publish_priority, NULL) != pdPASS)
+        {
+            PRINTF("Error: No se pudo crear la tarea vThread_Publish_Particles.\r\n");
+        }
+
+        publisher_threads_created = true;
     }
 }
+
+
 
 uint8_t Topic_id = 0;
 
@@ -234,30 +292,52 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
  */
 static void mqtt_subscribe_topics(mqtt_client_t *client)
 {
-    static const char *topics[] = {"Air_Filtering/Gas_up", "Air_Filtering/Particles_up"
-    								"Air_Filtering/GasThresh","Air_Filtering/PartThresh",
-    		    					"Air_Filtering/GasAlarmOFF", "Air_Filtering/PartAlarmOFF"};
-    int qos[]                   = {1, 1, 1, 1, 1, 1};
-    err_t err;
-    int i;
-
     mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb,
                             LWIP_CONST_CAST(void *, &mqtt_client_info));
 
-    for (i = 0; i < ARRAY_SIZE(topics); i++)
+    for (int i = 0; i < TOTAL_TOPICS; i++)
     {
-        err = mqtt_subscribe(client, topics[i], qos[i], mqtt_topic_subscribed_cb, LWIP_CONST_CAST(void *, topics[i]));
+        if (!topic_list[i].subscribed && topic_list[i].retries < MAX_RETRIES)
+        {
+            err_t err = mqtt_subscribe(client,
+                                       topic_list[i].topic,
+                                       topic_list[i].qos,
+                                       mqtt_topic_subscribed_cb,
+                                       (void *)(uintptr_t)i);
 
-        if (err == ERR_OK)
-        {
-            PRINTF("Subscribing to the topic \"%s\" with QoS %d...\r\n", topics[i], qos[i]);
-        }
-        else
-        {
-            PRINTF("Failed to subscribe to the topic \"%s\" with QoS %d: %d.\r\n", topics[i], qos[i], err);
+            if (err == ERR_OK)
+            {
+                PRINTF("Subscribing to the topic \"%s\" with QoS %d...\r\n",
+                       topic_list[i].topic, topic_list[i].qos);
+            }
+            else
+            {
+                topic_list[i].retries++;
+                PRINTF("Immediate subscribe error for topic \"%s\": %d (retry %d)\r\n",
+                       topic_list[i].topic, err, topic_list[i].retries);
+            }
+
+            sys_msleep(100); // Small delay between subscriptions
         }
     }
+
+    // Schedule retry if not all subscribed
+    bool needs_retry = false;
+    for (int i = 0; i < TOTAL_TOPICS; i++)
+    {
+        if (!topic_list[i].subscribed && topic_list[i].retries < MAX_RETRIES)
+        {
+            needs_retry = true;
+            break;
+        }
+    }
+
+    if (needs_retry)
+    {
+        sys_timeout(1000, (sys_timeout_handler)mqtt_subscribe_topics, client);
+    }
 }
+
 
 /*!
  * @brief Called when connection state changes.
@@ -508,18 +588,6 @@ static void app_thread(void *arg)
     {
         PRINTF("Failed to obtain IP address: %d.\r\n", err);
     }
-
-
-	sys_msleep(1000U);
-
-    if (xTaskCreate(vThread_Publish_Gas, "Gases", 1000, NULL, Publish_priority, NULL) != pdPASS) {
-    		PRINTF("Error: No se pudo crear la tarea vThread_Publish_Gas.\r\n");
-	}
-
-	if (xTaskCreate(vThread_Publish_Particles, "Particles", 1000, NULL, Publish_priority, NULL) != pdPASS) {
-		PRINTF("Error: No se pudo crear la tarea vThread_Publish_Particles.\r\n");
-	}
-
 
     vTaskDelete(NULL);
 }
