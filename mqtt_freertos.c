@@ -48,11 +48,34 @@
 /*! @brief Priority of the temporary initialization thread. */
 #define APP_THREAD_PRIO DEFAULT_THREAD_PRIO
 
+#define Publish_priority 	4
+#define Subscribe_priority 	3
+
+#define TpID_Gas_Thresh 	0
+#define TpID_Part_Thresh 	1
+#define TpID_GasAlarmOff 	2
+#define TpID_GasPartOff 	3
+#define TpID_GasUp		 	4
+#define TpID_PartUp		 	5
+
+#define Gas_default 10;
+#define Part_default 10;
+
+
 /*******************************************************************************
  * Prototypes
  ******************************************************************************/
 
 static void connect_to_mqtt(void *ctx);
+
+void vThread_Publish_Gas(void * pvParameters);
+
+void vThread_Publish_Particles(void * pvParameters);
+
+static void mqtt_message_published_cb(void *arg, err_t err);
+
+
+
 
 /*******************************************************************************
  * Variables
@@ -85,6 +108,13 @@ static ip_addr_t mqtt_addr;
 /*! @brief Indicates connection to MQTT broker. */
 static volatile bool connected = false;
 
+uint8_t Gas_Treshold = 30;
+uint8_t Particles_Treshold = 50;
+
+uint16_t Gas_value = Gas_default;
+uint16_t Particles_value = Part_default;
+
+
 /*******************************************************************************
  * Code
  ******************************************************************************/
@@ -106,6 +136,8 @@ static void mqtt_topic_subscribed_cb(void *arg, err_t err)
     }
 }
 
+uint8_t Topic_id = 0;
+
 /*!
  * @brief Called when there is a message on a subscribed topic.
  */
@@ -114,14 +146,30 @@ static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len
     LWIP_UNUSED_ARG(arg);
 
     PRINTF("Received %u bytes from the topic \"%s\": \"", tot_len, topic);
+
+    if(0 == strcmp(topic, "Air_Filtering/GasThresh")){
+    	Topic_id = TpID_Gas_Thresh;
+    } else if(0 == strcmp(topic, "Air_Filtering/PartThresh")){
+    	Topic_id = TpID_Part_Thresh;
+    }else if(0 == strcmp(topic, "Air_Filtering/GasAlarmOFF")){
+    	Topic_id = TpID_GasAlarmOff;
+    }else if(0 == strcmp(topic, "Air_Filtering/PartAlarmOFF")){
+    	Topic_id = TpID_GasPartOff;
+    }else if(0 == strcmp(topic, "Air_Filtering/Gas_up")){
+    	Topic_id = TpID_GasUp;
+    }else if(0 == strcmp(topic, "Air_Filtering/Particles_up")){
+        	Topic_id = TpID_PartUp;
+    }
 }
 
+
 /*!
- * @brief Called when recieved incoming published message fragment.
+ * @brief Called when received incoming published message fragment.
  */
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags)
 {
     int i;
+    uint8_t System_id = 0;
 
     LWIP_UNUSED_ARG(arg);
 
@@ -137,6 +185,44 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
         }
     }
 
+    switch(Topic_id){
+    case 0:
+			Gas_Treshold = (uint8_t)data[0] - 48;
+			Gas_Treshold = Gas_Treshold*10 + (uint8_t)data[1] - 48;
+			PRINTF("Gas Treshhold actualizado: %d\r\n", Gas_Treshold);
+    	break;
+    case 1:
+    		Particles_Treshold = (uint8_t)data[0] - 48;
+    		Particles_Treshold = Particles_Treshold*10 +(uint8_t)data[1] - 48;
+    		PRINTF("Particles Treshhold actualizado: %d\r\n", Particles_Treshold);
+    	break;
+    case 2:
+    		System_id = 0;
+    		Reset_Values(System_id);
+    	break;
+    case 3:
+			System_id = 1;
+			Reset_Values(System_id);
+		break;
+
+    case 4:
+    	if(Gas_value <= Gas_Treshold){
+    			Gas_value = Gas_value+1;
+    		}else {
+    			Gas_value = Gas_value;
+    		}
+		break;
+
+    case 5:
+		if(Particles_value <= Particles_Treshold){
+			Particles_value = Particles_value+1;
+		}else{
+			Particles_value = Particles_value;
+		}
+		break;
+
+    }
+
     if (flags & MQTT_DATA_FLAG_LAST)
     {
         PRINTF("\"\r\n");
@@ -148,8 +234,10 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
  */
 static void mqtt_subscribe_topics(mqtt_client_t *client)
 {
-    static const char *topics[] = {"lwip_topic/#", "lwip_other/#"};
-    int qos[]                   = {0, 1};
+    static const char *topics[] = {"Air_Filtering/Gas_up", "Air_Filtering/Particles_up"
+    								"Air_Filtering/GasThresh","Air_Filtering/PartThresh",
+    		    					"Air_Filtering/GasAlarmOFF", "Air_Filtering/PartAlarmOFF"};
+    int qos[]                   = {1, 1, 1, 1, 1, 1};
     err_t err;
     int i;
 
@@ -247,6 +335,121 @@ static void mqtt_message_published_cb(void *arg, err_t err)
     }
 }
 
+
+
+struct mqtt_publish_params {
+    struct mqtt_client_t *client;
+    const char *topic;
+    const char *payload;
+    u8_t qos;
+    u8_t retain;
+    mqtt_request_cb_t cb;
+    void *arg;
+};
+
+static void mqtt_publish_callback(void *arg) {
+    struct mqtt_publish_params *params = (struct mqtt_publish_params *)arg;
+
+    mqtt_publish(params->client,
+                 params->topic,
+                 params->payload,
+                 strlen(params->payload),
+                 params->qos,
+                 params->retain,
+                 params->cb,
+                 params->arg);
+
+    // Free dynamically allocated memory
+    free(params);
+}
+
+
+#include <string.h>
+#include <stdlib.h>
+
+char *my_strdup(const char *src) {
+    if (!src) return NULL;
+    size_t len = strlen(src) + 1;
+    char *dst = malloc(len);
+    if (dst) {
+        memcpy(dst, src, len);
+    }
+    return dst;
+}
+
+
+
+void vThread_Publish_Gas(void * pvParameters){
+
+	char *Topic_Gas = "Air_Filtering/GasValues";
+
+	char buffer[10];
+	sprintf(buffer, "%d", Gas_value);
+	char *Gas_val = buffer;
+
+	while (1) {
+			PRINTF("Valor de Gas: %d\r\n", Gas_value);
+			struct mqtt_publish_params *params = malloc(sizeof(struct mqtt_publish_params));
+			if (params) {
+				params->client = mqtt_client;
+				params->topic = Topic_Gas;
+				sprintf(buffer, "%d", Gas_value);
+				params->payload = my_strdup(buffer); // dynamically copy string
+				params->qos = 1;
+				params->retain = 0;
+				params->cb = mqtt_message_published_cb;
+				params->arg = (void *)Topic_Gas;
+
+				tcpip_callback(mqtt_publish_callback, params);
+				sys_msleep(6000U); //1 second delay
+
+			}
+	}
+}
+
+
+
+void vThread_Publish_Particles(void * pvParameters){
+
+	char *Topic_Particles = "Air_Filtering/PartValues";
+
+		char buffer[10];
+		sprintf(buffer, "%d", Particles_value);
+		char *Gas_val = buffer;
+
+		while (1) {
+				PRINTF("Valor de Particulas: %d\r\n", Particles_value);
+				struct mqtt_publish_params *params = malloc(sizeof(struct mqtt_publish_params));
+				if (params) {
+					params->client = mqtt_client;
+					params->topic = Topic_Particles;
+					sprintf(buffer, "%d", Particles_value);
+					params->payload = my_strdup(buffer); // dynamically copy string
+					params->qos = 1;
+					params->retain = 0;
+					params->cb = mqtt_message_published_cb;
+					params->arg = (void *)Topic_Particles;
+
+					tcpip_callback(mqtt_publish_callback, params);
+					sys_msleep(9000U); //1 second delay
+
+			}
+	}
+}
+
+void Reset_Values(uint8_t system_ID){
+	if(0 == system_ID){
+		Gas_value = Gas_default;
+		PRINTF("Gas values Reset \r\n");
+	}else if(1 == system_ID){
+		Particles_value = Part_default;
+		PRINTF("Particles values Reset \r\n");
+	}
+}
+
+
+
+
 /*!
  * @brief Publishes a message. To be called on tcpip_thread.
  */
@@ -306,21 +509,17 @@ static void app_thread(void *arg)
         PRINTF("Failed to obtain IP address: %d.\r\n", err);
     }
 
-    /* Publish some messages */
-    for (i = 0; i < 5;)
-    {
-        if (connected)
-        {
-            err = tcpip_callback(publish_message, NULL);
-            if (err != ERR_OK)
-            {
-                PRINTF("Failed to invoke publishing of a message on the tcpip_thread: %d.\r\n", err);
-            }
-            i++;
-        }
 
-        sys_msleep(1000U);
-    }
+	sys_msleep(1000U);
+
+    if (xTaskCreate(vThread_Publish_Gas, "Gases", 1000, NULL, Publish_priority, NULL) != pdPASS) {
+    		PRINTF("Error: No se pudo crear la tarea vThread_Publish_Gas.\r\n");
+	}
+
+	if (xTaskCreate(vThread_Publish_Particles, "Particles", 1000, NULL, Publish_priority, NULL) != pdPASS) {
+		PRINTF("Error: No se pudo crear la tarea vThread_Publish_Particles.\r\n");
+	}
+
 
     vTaskDelete(NULL);
 }
