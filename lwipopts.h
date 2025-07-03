@@ -37,10 +37,14 @@
  */
 #define NO_SYS 0
 
+//#define CONFIG_NETWORK_HIGH_PERF 1
+
 #define MAX_SOCKETS_TCP           8
 #define MAX_LISTENING_SOCKETS_TCP 4
 #define MAX_SOCKETS_UDP           6
 #define TCP_SND_BUF_COUNT         2
+#define TCPIP_STACK_TX_HEAP_SIZE  0
+#define LWIP_COMPAT_SOCKETS       2
 
 /* ---------- Core locking ---------- */
 
@@ -69,7 +73,7 @@ void sys_mark_tcpip_thread(void);
 #define TCPIP_THREAD_NAME      "tcp/ip"
 #define TCPIP_THREAD_STACKSIZE 768
 #define TCPIP_THREAD_PRIO      2
-#define TCPIP_MBOX_SIZE        64
+#define TCPIP_MBOX_SIZE        32
 
 /**
  * DEFAULT_RAW_RECVMBOX_SIZE: The mailbox size for the incoming packets on a
@@ -99,7 +103,7 @@ void sys_mark_tcpip_thread(void);
  */
 #define DEFAULT_ACCEPTMBOX_SIZE 12
 
-#define DEFAULT_THREAD_STACKSIZE 400
+#define DEFAULT_THREAD_STACKSIZE 200
 #define DEFAULT_THREAD_PRIO      1
 
 #define LWIP_DEBUG       0
@@ -107,6 +111,9 @@ void sys_mark_tcpip_thread(void);
 #define SOCKETS_DEBUG    LWIP_DBG_OFF // | LWIP_DBG_MASK_LEVEL
 
 #define IP_DEBUG         LWIP_DBG_OFF
+#define IP6_DEBUG        LWIP_DBG_OFF
+#define ICMP6_DEBUG      LWIP_DBG_OFF
+#define DHCP6_DEBUG      LWIP_DBG_OFF
 #define ETHARP_DEBUG     LWIP_DBG_OFF
 #define NETIF_DEBUG      LWIP_DBG_OFF
 #define PBUF_DEBUG       LWIP_DBG_OFF
@@ -138,10 +145,6 @@ void sys_mark_tcpip_thread(void);
 #define SNMP_MSG_DEBUG   LWIP_DBG_OFF
 #define SNMP_MIB_DEBUG   LWIP_DBG_OFF
 #define DNS_DEBUG        LWIP_DBG_OFF
-
-#define IP6_DEBUG        LWIP_DBG_OFF
-#define ICMP6_DEBUG      LWIP_DBG_OFF
-#define DHCP6_DEBUG      LWIP_DBG_OFF
 
 #define SYS_LIGHTWEIGHT_PROT 1
 
@@ -179,7 +182,7 @@ void sys_mark_tcpip_thread(void);
  * a lot of data that needs to be copied, this should be set high.
  */
 #if (TCPIP_STACK_TX_HEAP_SIZE == 0)
-#define MEM_SIZE (TCP_MEM_SIZE + UDP_MEM_SIZE)
+#define MEM_SIZE (10 * 1024) //(TCP_MEM_SIZE + UDP_MEM_SIZE)
 #else
 #define MEM_SIZE (TCPIP_STACK_TX_HEAP_SIZE * 1024)
 #endif
@@ -194,18 +197,14 @@ void sys_mark_tcpip_thread(void);
    ---------- Internal Memory Pool Sizes ----------
    ------------------------------------------------
 */
-#define MEMP_USE_CUSTOM_POOLS 1
+#define MEMP_USE_CUSTOM_POOLS 0
 
 /**
  * MEMP_NUM_PBUF: the number of memp struct pbufs (used for PBUF_ROM and PBUF_REF).
  * If the application sends a lot of data out of ROM (or other static memory),
  * this should be set high.
  */
-#ifdef CONFIG_NETWORK_HIGH_PERF
-#define MEMP_NUM_PBUF 20
-#else
 #define MEMP_NUM_PBUF 10
-#endif
 
 /**
  * MEMP_NUM_TCP_PCB: the number of simulatenously active TCP connections.
@@ -230,21 +229,7 @@ void sys_mark_tcpip_thread(void);
  * for incoming packets.
  * (only needed if you use tcpip.c)
  */
-#ifdef CONFIG_NETWORK_HIGH_PERF
-#define MEMP_NUM_TCPIP_MSG_INPKT 32
-#else
 #define MEMP_NUM_TCPIP_MSG_INPKT 16
-#endif
-
-/** MEMP_NUM_TCPIP_MSG_*: the number of struct tcpip_msg, which is used
-   for sequential API communication and incoming packets. Used in
-   src/api/tcpip.c. */
-#ifdef CONFIG_NETWORK_HIGH_PERF
-#define MEMP_NUM_TCPIP_MSG_API 16
-#else
-#define MEMP_NUM_TCPIP_MSG_API 8
-#endif
-
 /**
  * MEMP_NUM_SYS_TIMEOUT: the number of simulateously active timeouts.
  * (requires NO_SYS==0)
@@ -255,12 +240,7 @@ void sys_mark_tcpip_thread(void);
  * MEMP_NUM_NETBUF: the number of struct netbufs.
  * (only needed if you use the sequential API, like api_lib.c)
  */
-#ifdef CONFIG_NETWORK_HIGH_PERF
-#define MEMP_NUM_NETBUF 32
-#else
 #define MEMP_NUM_NETBUF 16
-#endif
-
 /**
  * MEMP_NUM_NETCONN: the number of struct netconns.
  * (only needed if you use the sequential API, like api_lib.c)
@@ -274,7 +254,7 @@ void sys_mark_tcpip_thread(void);
 /**
  * PBUF_POOL_SIZE: the number of buffers in the pbuf pool.
  */
-#define PBUF_POOL_SIZE 40
+#define PBUF_POOL_SIZE 20
 
 /*
    ----------------------------------
@@ -331,17 +311,6 @@ void sys_mark_tcpip_thread(void);
 #define TCP_MSS 1460
 
 /*
-   ---------------------------------------
-   ---------- IPv6 options ---------------
-   ---------------------------------------
-*/
-
-/**
- * LWIP_IPV6==1: Enable IPv6
- */
-#define LWIP_IPV6 1
-
-/*
    ---------------------------------
    ---------- RAW options ----------
    ---------------------------------
@@ -351,12 +320,15 @@ void sys_mark_tcpip_thread(void);
  */
 #define LWIP_RAW 1
 
-/* Enable IPv4 Auto IP	*/
-#ifdef CONFIG_AUTOIP
-#define LWIP_AUTOIP                 1
-#define LWIP_DHCP_AUTOIP_COOP       1
-#define LWIP_DHCP_AUTOIP_COOP_TRIES 5
-#endif
+/*
+   ---------------------------------------
+   ---------- IPv6 options ---------------
+   ---------------------------------------
+*/
+/**
+ * LWIP_IPV6==1: Enable IPv6
+ */
+#define LWIP_IPV6 1
 
 #define LWIP_DNS_SECURE 0
 
