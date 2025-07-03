@@ -25,6 +25,8 @@
 #include <stdio.h>
 
 #include "FreeRTOS.h"
+#include "mqtt_freertos.h"
+
 
 /*******************************************************************************
  * Prototypes
@@ -517,7 +519,7 @@ static uint32_t CleanUpAP()
 static uint32_t SetBoardToClient()
 {
     int32_t result;
-    // If we are already connected, skip the initialization
+
     if (!g_BoardState.connected)
     {
         /* Add Wi-Fi network */
@@ -529,6 +531,7 @@ static uint32_t SetBoardToClient()
         {
             result = WPL_AddNetworkWithSecurity(g_BoardState.ssid, g_BoardState.password, WIFI_NETWORK_LABEL, WPL_SECURITY_WILDCARD);
         }
+
         if (result == WPLRET_SUCCESS)
         {
             PRINTF("Connecting as client to ssid: %s with password %s\r\n", g_BoardState.ssid, g_BoardState.password);
@@ -548,7 +551,6 @@ static uint32_t SetBoardToClient()
                 do
                 {
                     c = GETCHAR();
-                    // Skip over \n and \r and don't print the prompt again, just get next char
                 } while (c == '\n' || c == '\r');
 
                 switch (c)
@@ -563,14 +565,12 @@ static uint32_t SetBoardToClient()
                         }
                         else
                         {
-                            // Reset back to AP mode
                             g_BoardState.wifiState = WIFI_STATE_AP;
                             return 0;
                         }
                         break;
                     case 'a':
                     case 'A':
-                        // Try connecting again...
                         return 0;
                     default:
                         PRINTF("Unknown command %c, please try again.\r\n", c);
@@ -583,13 +583,40 @@ static uint32_t SetBoardToClient()
             PRINTF("[i] Connected to Wi-Fi\r\nssid: %s\r\n[!]passphrase: %s\r\n", g_BoardState.ssid,
                    g_BoardState.password);
             g_BoardState.connected = true;
+
             char ip[16];
             WPL_GetIP(ip, 1);
             PRINTF(" Now join that network on your device and connect to this IP: %s\r\n", ip);
+
+            if (netif_default != NULL && netif_is_up(netif_default)) {
+                PRINTF("netif_default is up and ready.\r\n");
+            } else {
+                PRINTF("[!] netif_default is not up or null.\r\n");
+            }
+
+            if (xTaskCreate(mqtt_freertos_run_thread, "mqtt_thread", 1024, netif_default, configMAX_PRIORITIES - 5, NULL) != pdPASS)
+            {
+                PRINTF("[!] MQTT Task creation failed!\r\n");
+            }
+
+            char netmask[16], gw[16];
+            WPL_GetIP(ip, 1);  // Verifica que tienes IP válida
+            ip4addr_ntoa_r(&netif_default->ip_addr, ip, sizeof(ip));
+            ip4addr_ntoa_r(&netif_default->netmask, netmask, sizeof(netmask));
+            ip4addr_ntoa_r(&netif_default->gw, gw, sizeof(gw));
+
+            PRINTF("IP: %s\r\n", ip);
+            PRINTF("Netmask: %s\r\n", netmask);
+            PRINTF("Gateway: %s\r\n", gw);
+
+            const ip_addr_t* dns_server = dns_getserver(0);
+            PRINTF("DNS Server: %s\r\n", ipaddr_ntoa(dns_server));
+
         }
     }
     return 0;
 }
+
 
 /* Wait for any transmissions to finish and clean up the Client connection */
 static uint32_t CleanUpClient()
