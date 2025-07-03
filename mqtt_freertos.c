@@ -22,6 +22,8 @@
 
 // FIXME cleanup
 
+
+
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -671,4 +673,6 @@ void mqtt_freertos_run_thread(struct netif *netif)
     {
         LWIP_ASSERT("mqtt_freertos_start_thread(): Task creation failed.", 0);
     }
+
+    vTaskDelete(NULL);
 }
